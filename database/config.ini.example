@@ -1,0 +1,21 @@
+[tester]
+name = Qun Li
+
+[mysqlconf]
+# NOTE: This is an example template for public GitHub.
+# Replace these values locally in database/config.ini (DO NOT commit secrets).
+host = 127.0.0.1
+port = 3306
+user = your_mysql_user
+password = your_mysql_password
+db_name = guest
+
+[user]
+# NOTE: Email notification is out of scope in the public repo.
+# Keep placeholder values here to avoid leaking secrets.
+HOST_SERVER = smtp.example.com
+FROM = example_sender@example.com
+TO = example_receiver@example.com
+user = example_sender@example.com
+password = your_email_password
+SUBJECT = API Automation Test Report

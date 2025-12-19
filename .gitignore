@@ -1,0 +1,18 @@
+# ===== Secrets / Local config =====
+database/config.ini
+
+# ===== Python cache =====
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# ===== Local environment =====
+.vscode/
+
+# ===== Generated reports / outputs =====
+report/
+
+# ===== OS files =====
+.DS_Store
+
