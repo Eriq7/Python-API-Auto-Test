@@ -4,7 +4,25 @@
 
 ## 📌 Overview
 
-This project demonstrates the design and implementation of a **custom API testing framework**.
+🔍 **What This Project Really Demonstrates**
+
+- **Framework-oriented testing mindset**  
+  Instead of writing scattered API test scripts, this project focuses on structuring API tests into a reusable and maintainable framework.
+
+- **Clear separation of concerns**  
+  Test logic, test data, and execution flow are separated, allowing tests to scale as the project grows.
+
+- **Predictable and maintainable API regression testing**  
+  By introducing Excel-based data-driven testing, standardized request handling, and unified HTML reporting, the framework makes regression testing easier to maintain and easier to understand—especially when test cases change frequently.
+
+💡 **When This Kind of Framework Is Useful**
+
+This approach is especially suitable for:
+
+- **Small to mid-sized backend systems**
+- **Teams that rely heavily on API regression testing**
+- **Scenarios where test cases change frequently and require clear traceability**
+
 
 The framework is built using:
 
