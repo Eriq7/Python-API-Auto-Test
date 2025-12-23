@@ -1,9 +1,67 @@
 pipeline {
   agent any
 
+  options {
+    skipDefaultCheckout(true)
+    timestamps()
+  }
+
+  environment {
+    // 避免并发/残留冲突（同一台机器跑多个 job 时更稳）
+    COMPOSE_PROJECT_NAME = "apitest-ci-${BUILD_NUMBER}"
+  }
+
   stages {
     stage('Checkout') {
-      steps { checkout scm }
+      steps {
+        checkout scm
+      }
+    }
+
+    stage('Patch URLs for Docker Network') {
+      steps {
+        sh '''
+          set -eux
+
+          python - <<'PY'
+import pathlib
+
+# 在 Jenkins 容器里跑 compose：应该用服务名访问 target-api
+REPLACEMENTS = {
+  "http://127.0.0.1:8000": "http://target-api:8000",
+  "http://localhost:8000": "http://target-api:8000",
+  "127.0.0.1:8000": "target-api:8000",
+  "localhost:8000": "target-api:8000",
+}
+
+# 只在常见位置做 patch（不存在就跳过）
+CANDIDATES = [
+  "run_demo.py",
+  "api_trigger.py",
+  "config/setting.py",
+  "config/setting.pyc",
+  "lib/sendrequests.py",
+]
+
+for fp in CANDIDATES:
+  p = pathlib.Path(fp)
+  if not p.exists() or not p.is_file():
+    continue
+  try:
+    txt = p.read_text(encoding="utf-8", errors="ignore")
+  except Exception:
+    continue
+
+  new_txt = txt
+  for old, new in REPLACEMENTS.items():
+    new_txt = new_txt.replace(old, new)
+
+  if new_txt != txt:
+    p.write_text(new_txt, encoding="utf-8")
+    print(f"[PATCH] {fp} updated")
+PY
+        '''
+      }
     }
 
     stage('Docker Sanity Check') {
@@ -21,61 +79,57 @@ pipeline {
         sh '''
           set -eux
           docker compose up -d --build
-
-          # 等 trigger 的 FastAPI 起起来（用 /docs 判活，避免纯 sleep 不稳）
-          for i in $(seq 1 30); do
-            if docker compose exec -T trigger python - <<'PY'
-import sys, requests
-try:
-    r = requests.get("http://127.0.0.1:8000/docs", timeout=2)
-    sys.exit(0 if r.status_code == 200 else 1)
-except Exception:
-    sys.exit(1)
-PY
-            then
-              echo "trigger is up"
-              break
-            fi
-            sleep 1
-          done
-
           docker compose ps
         '''
       }
     }
 
-    stage('Trigger Tests (inside trigger container)') {
+    stage('Wait for Services Ready') {
+      steps {
+        sh '''
+          set -eux
+          # 等 target-api ready（用容器内 curl 更稳，不依赖宿主端口）
+          for i in $(seq 1 30); do
+            if docker compose exec -T trigger sh -lc "curl -fsS http://target-api:8000/docs >/dev/null"; then
+              echo "target-api is up"
+              break
+            fi
+            sleep 1
+          done
+
+          # 等 trigger ready
+          for i in $(seq 1 30); do
+            if docker compose exec -T trigger sh -lc "curl -fsS http://127.0.0.1:8000/docs >/dev/null"; then
+              echo "trigger is up"
+              break
+            fi
+            sleep 1
+          done
+        '''
+      }
+    }
+
+    stage('Trigger Tests') {
       steps {
         sh '''
           set -eux
 
-          # 在 trigger 容器里用 python+requests 调 /run-tests（不依赖 curl）
-          docker compose exec -T trigger python - <<'PY'
-import json, sys, requests
+          # 在 trigger 容器里触发它自己的 /run-tests
+          docker compose exec -T trigger sh -lc '
+            curl -s -X POST http://127.0.0.1:8000/run-tests > /app/trigger_result.json
+            cat /app/trigger_result.json
 
-url = "http://127.0.0.1:8000/run-tests"
-try:
-    r = requests.post(url, timeout=600)
-    text = r.text
-except Exception as e:
-    print("POST /run-tests failed:", e)
-    sys.exit(2)
-
-print(text)
-
-try:
-    data = r.json()
-except Exception:
-    data = {"exit_code": 1, "raw": text}
-
-# 固定写到 /app，方便 docker compose cp
-with open("/app/trigger_result.json", "w", encoding="utf-8") as f:
-    json.dump(data, f, ensure_ascii=False, indent=2)
-
-sys.exit(int(data.get("exit_code", 1)))
+            python - << "PY"
+import json, sys
+with open("/app/trigger_result.json","r",encoding="utf-8") as f:
+    data=json.load(f)
+code=int(data.get("exit_code",1))
+print("exit_code =", code)
+sys.exit(code)
 PY
+          '
 
-          # 把产物拷回 Jenkins workspace 以便归档
+          # 拷贝产物回 workspace
           rm -rf report trigger_result.json || true
           docker compose cp trigger:/app/trigger_result.json ./trigger_result.json || true
           docker compose cp trigger:/app/report ./report || true
@@ -88,11 +142,10 @@ PY
     always {
       sh '''
         set +e
-        # 失败时也保留关键日志，排错有用
         docker compose logs --no-color --tail=200 || true
         docker compose down -v || true
       '''
-      archiveArtifacts artifacts: 'report/**/*.html,trigger_result.json', allowEmptyArchive: true
+      archiveArtifacts artifacts: 'report/*.html,trigger_result.json', allowEmptyArchive: true
     }
   }
 }
