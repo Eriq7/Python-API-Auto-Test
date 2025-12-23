@@ -98,17 +98,24 @@ PY
           # 用 curl 容器在 compose 网络里探活，避免 Jenkins 节点没 curl
           NET="${COMPOSE_PROJECT_NAME}_default"
 
+          # /health 在你的项目里可能不存在（会 404），所以这里做探活兜底：
+          # 依次尝试常见 FastAPI 可用路径，任何一个返回 2xx/3xx 都算 ready
+          PATHS="/health /docs /openapi.json /"
+
           for i in $(seq 1 60); do
-            if docker run --rm --network "$NET" curlimages/curl:8.6.0 \
-                 -fsS "http://target-api:8000/health" >/dev/null 2>&1; then
-              echo "target-api ready"
-              exit 0
-            fi
+            for p in $PATHS; do
+              code="$(docker run --rm --network "$NET" curlimages/curl:8.6.0 -s -o /dev/null -w '%{http_code}' "http://target-api:8000$p" || true)"
+              if [ "$code" -ge 200 ] && [ "$code" -lt 400 ]; then
+                echo "target-api ready via $p (HTTP $code)"
+                exit 0
+              fi
+            done
             sleep 2
           done
 
           echo "target-api NOT ready after 120s"
           docker compose ps
+          docker compose logs --no-color --tail=200 target-api || true
           exit 1
         '''
       }
