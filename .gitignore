@@ -1,18 +1,76 @@
-# ===== Secrets / Local config =====
-database/config.ini
+############################
+# OS / Editor
+############################
+.DS_Store
+Thumbs.db
 
-# ===== Python cache =====
+.vscode/
+.idea/
+
+############################
+# Python
+############################
 __pycache__/
-*.pyc
+*.py[cod]
 *.pyo
 *.pyd
+*.so
+*.egg-info/
+.eggs/
+build/
+dist/
+pip-wheel-metadata/
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+env/
 
-# ===== Local environment =====
-.vscode/
+############################
+# Logs
+############################
+*.log
 
-# ===== Generated reports / outputs =====
+############################
+# Local configs / secrets
+############################
+*.env
+.env.*
+database/config.ini
+database/*.ini
+config.ini
+
+############################
+# Reports & runtime outputs
+############################
 report/
+reports/
+*.html
+*.xml
+*.jsonl
 
-# ===== OS files =====
-.DS_Store
+############################
+# Excel temp / backup
+############################
+# Office temp lock files
+database/~$*.xlsx
+~$*.xlsx
 
+# backups
+database/*_bak.xlsx
+database/*backup*.xlsx
+
+############################
+# Large / non-essential assets
+############################
+pics/
+share/screenshots/
+
+############################
+# Things you explicitly don't want in GitHub
+############################
+# Old fixtures / optional modules (not used in interview version)
+db_fixture/
+lib/sendmail.py

@@ -1,0 +1,14 @@
+services:
+  target-api:
+    build: .
+    command: uvicorn app:app --host 0.0.0.0 --port 8000
+    ports:
+      - "8000:8000"
+
+  trigger:
+    build: .
+    command: uvicorn api_trigger:app --host 0.0.0.0 --port 8000
+    depends_on:
+      - target-api
+    ports:
+      - "9000:8000"

@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # _*_ coding:utf-8 _*_
 __author__ = 'Qun Li'
 
@@ -7,82 +7,120 @@ import sys
 import time
 import unittest
 import shutil
-import webbrowser
+import argparse
 
-import requests  # ✅ NEW: for reset endpoint
+import requests  # ✅ NEW: call reset endpoint
 
 sys.path.append(os.path.dirname(__file__))
 
 from config import setting
 from package.HTMLTestRunner import HTMLTestRunner
-from lib.sendmail import send_mail
-from lib.newReport import new_report
-from db_fixture import test_data
 
 
-def add_case(test_path=setting.TEST_CASE):
-    """Load all test cases"""
-    discover = unittest.defaultTestLoader.discover(test_path, pattern='*API.py')
-    return discover
+def add_case(test_path: str, pattern: str) -> unittest.TestSuite:
+    """Load all test cases."""
+    return unittest.defaultTestLoader.discover(test_path, pattern=pattern)
 
 
 def reset_test_data():
     """
-    ✅ Best practice for stable, repeatable runs (no data pollution):
-    Try to reset data via API endpoint before running tests.
-
-    This avoids relying on local MySQL (which may not exist on demo machines).
-    If reset endpoint is not available, we DO NOT crash the run.
+    ✅ Make runs repeatable (local/CI):
+    Reset target API in-memory data before tests.
     """
     reset_url = "http://127.0.0.1:8000/api/test/reset"
-    headers = {"X-TEST-KEY": "local-dev-only"}  # you can change/remove if your backend doesn't check it
-
     try:
-        resp = requests.post(reset_url, headers=headers, timeout=3)
-        resp.raise_for_status()
-        print(f"[INFO] Test data reset via API OK -> {reset_url}")
+        r = requests.post(reset_url, timeout=3)
+        r.raise_for_status()
+        print(f"[INFO] reset OK -> {reset_url}")
         return True
     except Exception as e:
-        print(f"[WARN] Test data reset via API skipped/failed: {e}")
-        print("[WARN] Continuing without reset. Create-type cases may become non-idempotent.")
+        print(f"[WARN] reset failed -> {e}")
         return False
 
 
-def run_case(all_case, result_path=setting.TEST_REPORT):
-    """Run all test cases"""
+def run_case(suite: unittest.TestSuite, report_dir: str, title: str, description: str, tester: str):
+    """Run test suite and generate report files."""
+    os.makedirs(report_dir, exist_ok=True)
 
-    # ✅ NEW: reset test data via API (recommended)
-    reset_test_data()
+    now = time.strftime("%Y-%m-%d_%H_%M_%S")
+    report_path = os.path.join(report_dir, f"{now}_result.html")
+    latest_path = os.path.join(report_dir, "latest.html")
 
-    # (Optional) Old DB reset approach (requires local MySQL). Keep it off for demos.
-    # test_data.init_data()
-
-    now = time.strftime("%Y-%m-%d %H_%M_%S")
-    filename = os.path.join(result_path, f"{now}result.html")
-
-    # 1) Generate timestamped report
-    with open(filename, "wb") as fp:
+    with open(report_path, "wb") as fp:
         runner = HTMLTestRunner(
             stream=fp,
-            title='E-commerce API Automation Test Report',
-            description='Macbook Air M3 | Python Requests + Unittest + DDT + Excel (Data-Driven)',
-            tester='Qun Li'
+            title=title,
+            description=description,
+            tester=tester
         )
-        runner.run(all_case)
+        result = runner.run(suite)
 
-    # 2) Generate fixed entry: report/latest.html
-    latest_html = os.path.join(result_path, "latest.html")
-    shutil.copyfile(filename, latest_html)
-    print(f"[INFO] latest report -> {latest_html}")
+    # Stable entry for reviewers/CI artifacts
+    try:
+        shutil.copyfile(report_path, latest_path)
+        print(f"[INFO] latest report -> {os.path.abspath(latest_path)}")
+    except Exception as e:
+        print(f"[WARN] Failed to write latest.html: {e}")
 
-    # 3) Auto-open latest.html (for demo)
-    webbrowser.open(f"file://{os.path.abspath(latest_html)}")
+    return result, report_path, latest_path
 
-    # 4) Keep your original logic: find latest report + send email
-    report = new_report(setting.TEST_REPORT)
-    send_mail(report)
+
+def parse_args():
+    p = argparse.ArgumentParser(description="DemoAPI test runner (CI-friendly)")
+    p.add_argument("--test-path", default=getattr(setting, "TEST_CASE", "testcase"))
+    p.add_argument("--pattern", default="*API.py")
+    p.add_argument("--report-dir", default=getattr(setting, "TEST_REPORT", "report"))
+    p.add_argument("--title", default="E-commerce API Automation Test Report")
+    p.add_argument("--description", default="Python Requests + Unittest + DDT + Excel (Data-Driven)")
+    p.add_argument("--tester", default="Qun Li")
+    return p.parse_args()
+
+
+def main() -> int:
+    """
+    Exit codes for CI:
+      0 = SUCCESS (no failures/errors)
+      1 = FAILED  (failures/errors exist)
+      2 = ERROR   (runner crashed)
+    """
+    args = parse_args()
+
+    # ✅ NEW: always reset first (doesn't crash if reset is unavailable)
+    reset_test_data()
+
+    try:
+        suite = add_case(args.test_path, args.pattern)
+    except Exception as e:
+        print(f"[ERROR] Failed to discover tests: {e}")
+        return 2
+
+    try:
+        result, report_path, latest_path = run_case(
+            suite,
+            args.report_dir,
+            args.title,
+            args.description,
+            args.tester
+        )
+    except Exception as e:
+        print(f"[ERROR] Failed to run tests / generate report: {e}")
+        return 2
+
+    failures = len(getattr(result, "failures", []))
+    errors = len(getattr(result, "errors", []))
+    tests_run = getattr(result, "testsRun", 0)
+
+    print("----- SUMMARY -----")
+    print(f"TESTS_RUN={tests_run}")
+    print(f"FAILURES={failures}")
+    print(f"ERRORS={errors}")
+    print(f"REPORT_PATH={os.path.abspath(report_path)}")
+    print(f"LATEST_REPORT_PATH={os.path.abspath(latest_path)}")
+    ok = (failures == 0 and errors == 0)
+    print(f"RESULT={'SUCCESS' if ok else 'FAILED'}")
+
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":
-    cases = add_case()
-    run_case(cases)
+    sys.exit(main())
