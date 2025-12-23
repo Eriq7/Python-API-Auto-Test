@@ -7,7 +7,6 @@ pipeline {
     COMPOSE_PROJECT_NAME = "apitestci-${env.BUILD_NUMBER}"
     DOCKER_BUILDKIT = "1"
     COMPOSE_DOCKER_CLI_BUILD = "1"
-    // 统一把测试指向 compose 里的 target-api
     BASE_URL = "http://target-api:8000"
     RESET_PATH = "/api/test/reset"
   }
@@ -76,11 +75,10 @@ pipeline {
         sh '''
           set -euxo pipefail
 
-          # 先清理 workspace 里的旧产物
+          # 清理 workspace 里的旧产物
           rm -rf report log || true
-          mkdir -p report log
 
-          # 运行测试：无论成功失败，都要把 /app/report 拷出来
+          # 运行测试（无论成功失败都要导出 report）
           set +e
           docker compose exec -T \
             -e BASE_URL="${BASE_URL}" \
@@ -94,13 +92,16 @@ pipeline {
           rc=$?
           set -e
 
-          # 把容器里生成的报告/日志拷回 Jenkins workspace（否则 archiveArtifacts 抓不到）
-          docker compose cp trigger:/app/report ./report || true
-          docker compose cp trigger:/app/log ./log || true
+          # ✅ 关键修复：把容器里的 /app/report 目录拷到 workspace 根目录（避免 report/report 套娃）
+          docker compose cp trigger:/app/report . || true
+
+          # 可选：如果容器里确实有 /app/log 才拷，避免无意义报错
+          docker compose exec -T trigger sh -lc 'test -d /app/log' && \
+            docker compose cp trigger:/app/log . || true
 
           echo "=== copied artifacts ==="
-          find report -maxdepth 2 -type f -print || true
-          find log -maxdepth 2 -type f -print || true
+          find report -maxdepth 3 -type f -print || true
+          find log -maxdepth 3 -type f -print || true
 
           exit $rc
         '''
