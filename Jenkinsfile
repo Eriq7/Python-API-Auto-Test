@@ -2,18 +2,27 @@ pipeline {
   agent any
 
   stages {
-
     stage('Checkout') {
       steps { checkout scm }
+    }
+
+    stage('Docker Sanity Check') {
+      steps {
+        sh '''
+          set -eux
+          docker version
+          docker compose version
+        '''
+      }
     }
 
     stage('Start Services (Compose)') {
       steps {
         sh '''
           set -eux
-          docker-compose up -d --build
+          docker compose up -d --build
           sleep 2
-          docker-compose ps
+          docker compose ps
         '''
       }
     }
@@ -23,8 +32,8 @@ pipeline {
         sh '''
           set -eux
 
-          # 在 trigger 容器内部调用它自己的 FastAPI（避免 Jenkins 容器访问 127.0.0.1 的歧义）
-          docker-compose exec -T trigger sh -lc '
+          # 在 trigger 容器内部调用 trigger 自己的接口（容器内监听 8000）
+          docker compose exec -T trigger sh -lc '
             curl -s -X POST http://127.0.0.1:8000/run-tests > trigger_result.json
             cat trigger_result.json
 
@@ -38,13 +47,11 @@ sys.exit(code)
 PY
           '
 
-          # 把产物从 trigger 容器拷回 Jenkins workspace，方便归档
-          rm -rf report trigger_result.json || true
-          docker-compose cp trigger:/app/trigger_result.json ./trigger_result.json || true
-          docker-compose cp trigger:/app/report ./report || true
-
-          ls -lah || true
-          ls -lah report || true
+          # 把产物拷回 Jenkins workspace（方便归档）
+          rm -rf report || true
+          rm -f trigger_result.json || true
+          docker compose cp trigger:/app/trigger_result.json ./trigger_result.json || true
+          docker compose cp trigger:/app/report ./report || true
         '''
       }
     }
@@ -54,7 +61,7 @@ PY
     always {
       sh '''
         set +e
-        docker-compose down -v
+        docker compose down -v || true
       '''
       archiveArtifacts artifacts: 'report/*.html,trigger_result.json', allowEmptyArchive: true
     }
