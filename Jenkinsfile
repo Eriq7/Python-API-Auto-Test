@@ -17,6 +17,9 @@ pipeline {
         checkout scm
         sh '''
           set -euxo pipefail
+          # ✅ 关键：清理 workspace 里所有未被 git 跟踪的旧产物（防止 artifacts 混入历史 report）
+          git clean -fdx
+
           echo "=== workspace ==="
           pwd
           ls -la
@@ -75,8 +78,9 @@ pipeline {
         sh '''
           set -euxo pipefail
 
-          # 清理 workspace 里的旧产物
+          # 清理 workspace 里的旧产物（双保险）
           rm -rf report log || true
+          mkdir -p report log
 
           # 运行测试（无论成功失败都要导出 report）
           set +e
@@ -86,18 +90,20 @@ pipeline {
             -e REPORT_DIR="/app/report" \
             trigger sh -lc '
               set -euxo pipefail
-              mkdir -p /app/report
+              # ✅ 容器内也清一次，避免 /app/report 里残留历史结果
+              rm -rf /app/report /app/log || true
+              mkdir -p /app/report /app/log
               python run_demo.py
             '
           rc=$?
           set -e
 
-          # ✅ 关键修复：把容器里的 /app/report 目录拷到 workspace 根目录（避免 report/report 套娃）
-          docker compose cp trigger:/app/report . || true
+          # ✅ 关键修复：只拷贝 /app/report 目录“内容”到 workspace/report（避免 report/report 套娃）
+          docker compose cp trigger:/app/report/. report || true
 
-          # 可选：如果容器里确实有 /app/log 才拷，避免无意义报错
+          # log 同理：只拷内容
           docker compose exec -T trigger sh -lc 'test -d /app/log' && \
-            docker compose cp trigger:/app/log . || true
+            docker compose cp trigger:/app/log/. log || true
 
           echo "=== copied artifacts ==="
           find report -maxdepth 3 -type f -print || true
