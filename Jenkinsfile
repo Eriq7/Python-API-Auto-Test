@@ -1,12 +1,9 @@
 pipeline {
   agent any
 
-  options {
-    timestamps()
-  }
+  options { timestamps() }
 
   environment {
-    // 避免 workspace 名字奇怪导致 compose project 名异常
     COMPOSE_PROJECT_NAME = "apitestci-${env.BUILD_NUMBER}"
     DOCKER_BUILDKIT = "1"
     COMPOSE_DOCKER_CLI_BUILD = "1"
@@ -16,6 +13,14 @@ pipeline {
     stage('Checkout') {
       steps {
         checkout scm
+        sh '''
+          set -euxo pipefail
+          echo "=== host workspace check ==="
+          pwd
+          ls -la
+          echo "=== top files ==="
+          find . -maxdepth 2 -type f | sed -n '1,120p'
+        '''
       }
     }
 
@@ -33,8 +38,6 @@ pipeline {
       steps {
         sh '''
           set -euxo pipefail
-
-          # 在 python 容器里做替换，避免 Jenkins 节点没有 python
           docker run --rm -v "$PWD":/w -w /w python:3.12-slim python - <<'PY'
 import pathlib, re
 
@@ -71,8 +74,6 @@ for p in root.rglob("*"):
 print(f"patched_files={len(changed)}")
 for f in changed[:50]:
     print(" -", f)
-if len(changed) > 50:
-    print(f" ... (+{len(changed)-50} more)")
 PY
         '''
       }
@@ -92,12 +93,8 @@ PY
       steps {
         sh '''
           set -euxo pipefail
-
-          # 用 curl 容器在 compose 网络里探活，避免 Jenkins 节点没 curl
           NET="${COMPOSE_PROJECT_NAME}_default"
-
-          # FastAPI 很常见没有 /health，但一定会有 /docs 或 /openapi.json（除非你关了文档）
-          PROBES="/health /docs /openapi.json"
+          PROBES="/health /docs /openapi.json /"
 
           for i in $(seq 1 60); do
             for p in $PROBES; do
@@ -124,43 +121,46 @@ PY
           set -euxo pipefail
           NET="${COMPOSE_PROJECT_NAME}_default"
 
-          # 在 python 容器里装依赖 + 执行测试（避免 Jenkins 节点没有 python）
+          echo "=== host workspace sanity before tests ==="
+          pwd
+          ls -la
+          test -f requirements.txt || true
+          test -f run_demo.py || true
+
           docker run --rm --network "$NET" -v "$PWD":/w -w /w python:3.12-slim sh -lc '
             set -euxo pipefail
+            echo "=== inside container workspace check ==="
+            pwd
+            ls -la
+            echo "=== inside container top files ==="
+            find . -maxdepth 2 -type f | sed -n "1,120p"
+
+            # 如果这里还是空目录，直接报错（别再浪费一次 build）
+            cnt=$(find . -maxdepth 1 -type f | wc -l | tr -d " ")
+            if [ "$cnt" -eq 0 ]; then
+              echo "ERROR: workspace mounted into container is empty. Checkout/mount path is wrong."
+              exit 22
+            fi
+
             python -m pip install -U pip
             if [ -f requirements.txt ]; then
               pip install -r requirements.txt
             fi
 
-            echo "=== list potential test dirs/files ==="
-            ls -la
+            if [ -f run_demo.py ]; then
+              python run_demo.py
+              exit 0
+            fi
+
+            # 兜底：按常见目录跑
             for d in testcase testcases tests test; do
-              [ -d "$d" ] && echo "found dir: $d" && ls -la "$d" || true
+              if [ -d "$d" ]; then
+                python -m unittest discover -s "$d" -p "*.py" -t .
+                exit 0
+              fi
             done
 
-            echo "=== run tests ==="
-            rc=0
-
-            if [ -f run_demo.py ]; then
-              python run_demo.py || rc=$?
-            else
-              rc=5
-            fi
-
-            # 如果 run_demo 没跑起来/没发现测试：做兜底 discover
-            if [ "$rc" -eq 5 ]; then
-              echo "run_demo had no tests (or not found). Fallback to unittest discover..."
-              for d in testcase testcases tests test; do
-                if [ -d "$d" ]; then
-                  python -m unittest discover -s "$d" -p "*.py" -t . && exit 0
-                fi
-              done
-              python -m unittest discover -s . -p "test*.py" -t . && exit 0
-              echo "still no tests discovered"
-              exit 5
-            fi
-
-            exit "$rc"
+            python -m unittest discover -s . -p "test*.py" -t .
           '
         '''
       }
