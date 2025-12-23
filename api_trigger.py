@@ -6,18 +6,13 @@ app = FastAPI(title="DemoAPI Test Trigger", version="1.0")
 
 @app.post("/run-tests")
 def run_tests():
-    """
-    Synchronous trigger:
-    - runs: python run_demo.py
-    - returns: status + exit_code + report path lines (stdout tail)
-    """
     cmd = [sys.executable, "run_demo.py"]
     p = subprocess.run(cmd, capture_output=True, text=True)
     exit_code = p.returncode
     status = "SUCCESS" if exit_code == 0 else "FAILED"
 
-    out_lines = (p.stdout or "").splitlines()[-80:]
-    err_lines = (p.stderr or "").splitlines()[-80:]
+    out_lines = (p.stdout or "").splitlines()[-120:]
+    err_lines = (p.stderr or "").splitlines()[-120:]
 
     return {
         "status": status,

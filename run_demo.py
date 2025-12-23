@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # _*_ coding:utf-8 _*_
-__author__ = 'Qun Li'
+__author__ = "Qun Li"
 
 import os
 import sys
@@ -8,7 +8,6 @@ import time
 import unittest
 import shutil
 import argparse
-
 import requests
 
 sys.path.append(os.path.dirname(__file__))
@@ -18,47 +17,27 @@ from package.HTMLTestRunner import HTMLTestRunner
 
 
 def add_case(test_path: str, pattern: str) -> unittest.TestSuite:
-    """Load all test cases."""
     return unittest.defaultTestLoader.discover(test_path, pattern=pattern)
 
 
-def _get_base_url() -> str:
-    """
-    Scheme A:
-    - Local default: http://127.0.0.1:8000
-    - CI/Compose: export BASE_URL=http://target-api:8000
-    """
-    return os.getenv("BASE_URL", "http://127.0.0.1:8000").rstrip("/")
+def env(name: str, default: str) -> str:
+    v = os.getenv(name)
+    return v if v and v.strip() else default
 
 
-def reset_test_data():
-    """
-    Make runs repeatable (local/CI):
-    Reset target API data before tests.
-
-    Control via env:
-      BASE_URL   (default http://127.0.0.1:8000)
-      RESET_PATH (default /api/test/reset)
-    """
-    base = _get_base_url()
-    reset_path = os.getenv("RESET_PATH", "/api/test/reset")
-    if not reset_path.startswith("/"):
-        reset_path = "/" + reset_path
-
-    reset_url = f"{base}{reset_path}"
-
+def reset_test_data(base_url: str, reset_path: str) -> bool:
+    reset_url = base_url.rstrip("/") + reset_path
     try:
         r = requests.post(reset_url, timeout=5)
         r.raise_for_status()
         print(f"[INFO] reset OK -> {reset_url}")
         return True
     except Exception as e:
-        print(f"[WARN] reset failed -> {reset_url} ({e})")
+        print(f"[WARN] reset failed -> {e} (url={reset_url})")
         return False
 
 
 def run_case(suite: unittest.TestSuite, report_dir: str, title: str, description: str, tester: str):
-    """Run test suite and generate report files."""
     os.makedirs(report_dir, exist_ok=True)
 
     now = time.strftime("%Y-%m-%d_%H_%M_%S")
@@ -66,12 +45,7 @@ def run_case(suite: unittest.TestSuite, report_dir: str, title: str, description
     latest_path = os.path.join(report_dir, "latest.html")
 
     with open(report_path, "wb") as fp:
-        runner = HTMLTestRunner(
-            stream=fp,
-            title=title,
-            description=description,
-            tester=tester
-        )
+        runner = HTMLTestRunner(stream=fp, title=title, description=description, tester=tester)
         result = runner.run(suite)
 
     try:
@@ -83,11 +57,40 @@ def run_case(suite: unittest.TestSuite, report_dir: str, title: str, description
     return result, report_path, latest_path
 
 
+def dump_result_details(result, max_lines=80):
+    # 把 errors/failures 的 traceback 打出来（否则 Jenkins 控制台只看到一堆 E）
+    def _tail(tb: str) -> str:
+        lines = (tb or "").splitlines()
+        return "\n".join(lines[-max_lines:])
+
+    if getattr(result, "errors", None):
+        print("----- ERROR DETAILS (tail) -----")
+        for test, tb in result.errors:
+            try:
+                tid = test.id()
+            except Exception:
+                tid = str(test)
+            print(f"[ERROR] {tid}")
+            print(_tail(tb))
+            print("-" * 60)
+
+    if getattr(result, "failures", None):
+        print("----- FAILURE DETAILS (tail) -----")
+        for test, tb in result.failures:
+            try:
+                tid = test.id()
+            except Exception:
+                tid = str(test)
+            print(f"[FAIL] {tid}")
+            print(_tail(tb))
+            print("-" * 60)
+
+
 def parse_args():
     p = argparse.ArgumentParser(description="DemoAPI test runner (CI-friendly)")
     p.add_argument("--test-path", default=getattr(setting, "TEST_CASE", "testcase"))
     p.add_argument("--pattern", default="*API.py")
-    p.add_argument("--report-dir", default=getattr(setting, "TEST_REPORT", "report"))
+    p.add_argument("--report-dir", default=env("REPORT_DIR", getattr(setting, "TEST_REPORT", "report")))
     p.add_argument("--title", default="E-commerce API Automation Test Report")
     p.add_argument("--description", default="Python Requests + Unittest + DDT + Excel (Data-Driven)")
     p.add_argument("--tester", default="Qun Li")
@@ -95,16 +98,16 @@ def parse_args():
 
 
 def main() -> int:
-    """
-    Exit codes for CI:
-      0 = SUCCESS (no failures/errors)
-      1 = FAILED  (failures/errors exist)
-      2 = ERROR   (runner crashed)
-    """
+    base_url = env("BASE_URL", "http://127.0.0.1:8000")
+    reset_path = env("RESET_PATH", "/api/test/reset")
+
+    print(f"BASE_URL={base_url}")
+    print(f"RESET_PATH={reset_path}")
+
     args = parse_args()
 
-    # Always reset first (doesn't crash if reset is unavailable)
-    reset_test_data()
+    # reset 放最前面（CI 下需要保证可重复跑）
+    reset_test_data(base_url, reset_path)
 
     try:
         suite = add_case(args.test_path, args.pattern)
@@ -114,11 +117,7 @@ def main() -> int:
 
     try:
         result, report_path, latest_path = run_case(
-            suite,
-            args.report_dir,
-            args.title,
-            args.description,
-            args.tester
+            suite, args.report_dir, args.title, args.description, args.tester
         )
     except Exception as e:
         print(f"[ERROR] Failed to run tests / generate report: {e}")
@@ -129,15 +128,17 @@ def main() -> int:
     tests_run = getattr(result, "testsRun", 0)
 
     print("----- SUMMARY -----")
-    print(f"BASE_URL={_get_base_url()}")
     print(f"TESTS_RUN={tests_run}")
     print(f"FAILURES={failures}")
     print(f"ERRORS={errors}")
     print(f"REPORT_PATH={os.path.abspath(report_path)}")
     print(f"LATEST_REPORT_PATH={os.path.abspath(latest_path)}")
+
+    # ✅ 关键：把异常细节打印到 Jenkins console
+    dump_result_details(result)
+
     ok = (failures == 0 and errors == 0)
     print(f"RESULT={'SUCCESS' if ok else 'FAILED'}")
-
     return 0 if ok else 1
 
 

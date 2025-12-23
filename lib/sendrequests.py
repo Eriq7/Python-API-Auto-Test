@@ -28,16 +28,19 @@ def safe_parse(x):
         if s == "":
             return None
 
+        # 1) JSON
         try:
             return json.loads(s)
         except Exception:
             pass
 
+        # 2) Python literal
         try:
             return ast.literal_eval(s)
         except Exception:
             pass
 
+        # 3) querystring -> dict
         try:
             if "=" in s:
                 kv_pairs = parse_qsl(s, keep_blank_values=True)
@@ -55,40 +58,22 @@ def _running_in_docker() -> bool:
     return os.path.exists("/.dockerenv")
 
 
-def _get_base_url_env() -> str | None:
+def _rewrite_url_for_docker(url: str) -> str:
     """
-    Scheme A control:
-      export BASE_URL=http://target-api:8000
+    在 CI / docker compose 场景：
+      容器里访问 target-api 应该用 service name：target-api
+    允许通过环境变量 DOCKER_URL_HOST 覆盖（默认 target-api）
     """
-    v = os.getenv("BASE_URL", "").strip()
-    if not v:
-        return None
-    return v.rstrip("/")
-
-
-def _rewrite_url_for_env_or_docker(url: str) -> str:
-    """
-    Priority:
-    1) If BASE_URL is set, overwrite scheme+netloc using BASE_URL, keep path+query+fragment.
-    2) Else if running in docker and host is localhost/127.0.0.1 -> rewrite to target-api
-    3) Else return unchanged
-    """
-    if not url:
+    if not url or not _running_in_docker():
         return url
+
+    docker_host = os.getenv("DOCKER_URL_HOST", "target-api")
 
     try:
         p = urlparse(url)
-
-        base = _get_base_url_env()
-        if base:
-            b = urlparse(base)
-            # keep original path/query/fragment, replace scheme+netloc
-            return urlunparse((b.scheme or p.scheme, b.netloc, p.path, p.params, p.query, p.fragment))
-
-        if _running_in_docker() and p.hostname in ("127.0.0.1", "localhost"):
-            new_netloc = p.netloc.replace(p.hostname, "target-api")
+        if p.hostname in ("127.0.0.1", "localhost"):
+            new_netloc = p.netloc.replace(p.hostname, docker_host)
             return urlunparse((p.scheme, new_netloc, p.path, p.params, p.query, p.fragment))
-
     except Exception:
         pass
 
@@ -106,8 +91,8 @@ class SendRequests:
             if not method or not url:
                 raise ValueError(f"Excel row missing method/url: method={method!r}, url={url!r}")
 
-            # ✅ Scheme A: env override OR docker rewrite to target-api
-            url = _rewrite_url_for_env_or_docker(url)
+            # ✅ Docker 下自动改写 localhost/127.0.0.1 -> target-api
+            url = _rewrite_url_for_docker(url)
 
             params = safe_parse(apiData.get("params"))
             headers = safe_parse(apiData.get("headers"))
