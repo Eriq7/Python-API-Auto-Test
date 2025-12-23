@@ -2,13 +2,14 @@ pipeline {
   agent any
 
   options {
-    skipDefaultCheckout(true)
     timestamps()
   }
 
   environment {
-    // 避免并发/残留冲突（同一台机器跑多个 job 时更稳）
-    COMPOSE_PROJECT_NAME = "apitest-ci-${BUILD_NUMBER}"
+    // 避免 workspace 名字奇怪导致 compose project 名异常
+    COMPOSE_PROJECT_NAME = "apitestci-${env.BUILD_NUMBER}"
+    DOCKER_BUILDKIT = "1"
+    COMPOSE_DOCKER_CLI_BUILD = "1"
   }
 
   stages {
@@ -18,58 +19,63 @@ pipeline {
       }
     }
 
-    stage('Patch URLs for Docker Network') {
+    stage('Docker Sanity Check') {
       steps {
         sh '''
-          set -eux
-
-          python - <<'PY'
-import pathlib
-
-# 在 Jenkins 容器里跑 compose：应该用服务名访问 target-api
-REPLACEMENTS = {
-  "http://127.0.0.1:8000": "http://target-api:8000",
-  "http://localhost:8000": "http://target-api:8000",
-  "127.0.0.1:8000": "target-api:8000",
-  "localhost:8000": "target-api:8000",
-}
-
-# 只在常见位置做 patch（不存在就跳过）
-CANDIDATES = [
-  "run_demo.py",
-  "api_trigger.py",
-  "config/setting.py",
-  "config/setting.pyc",
-  "lib/sendrequests.py",
-]
-
-for fp in CANDIDATES:
-  p = pathlib.Path(fp)
-  if not p.exists() or not p.is_file():
-    continue
-  try:
-    txt = p.read_text(encoding="utf-8", errors="ignore")
-  except Exception:
-    continue
-
-  new_txt = txt
-  for old, new in REPLACEMENTS.items():
-    new_txt = new_txt.replace(old, new)
-
-  if new_txt != txt:
-    p.write_text(new_txt, encoding="utf-8")
-    print(f"[PATCH] {fp} updated")
-PY
+          set -euxo pipefail
+          docker version
+          docker compose version
         '''
       }
     }
 
-    stage('Docker Sanity Check') {
+    stage('Patch URLs for Docker Network') {
       steps {
         sh '''
-          set -eux
-          docker version
-          docker compose version
+          set -euxo pipefail
+
+          # 在 python 容器里做替换，避免 Jenkins 节点没有 python
+          docker run --rm -v "$PWD":/w -w /w python:3.12-slim python - <<'PY'
+import pathlib, re
+
+root = pathlib.Path(".")
+exts = {".py",".yaml",".yml",".json",".ini",".cfg",".txt",".env"}
+skip_dirs = {".git",".venv","venv","__pycache__","node_modules","dist","build"}
+
+# 1) URL 里的 host：http://localhost:xxxx / http://127.0.0.1:xxxx
+# 2) 纯 host：localhost / 127.0.0.1
+patterns = [
+    (re.compile(r"(?<=://)(localhost|127\\.0\\.0\\.1)(?=[:/]|$)"), "target-api"),
+    (re.compile(r"\\b(localhost|127\\.0\\.0\\.1)\\b"), "target-api"),
+]
+
+changed = []
+for p in root.rglob("*"):
+    if any(part in skip_dirs for part in p.parts):
+        continue
+    if not p.is_file():
+        continue
+    if p.suffix not in exts:
+        continue
+    try:
+        s = p.read_text(encoding="utf-8")
+    except Exception:
+        continue
+
+    t = s
+    for pat, repl in patterns:
+        t = pat.sub(repl, t)
+
+    if t != s:
+        p.write_text(t, encoding="utf-8")
+        changed.append(str(p))
+
+print(f"patched_files={len(changed)}")
+for f in changed[:50]:
+    print(" -", f)
+if len(changed) > 50:
+    print(f" ... (+{len(changed)-50} more)")
+PY
         '''
       }
     }
@@ -77,7 +83,7 @@ PY
     stage('Start Services (Compose)') {
       steps {
         sh '''
-          set -eux
+          set -euxo pipefail
           docker compose up -d --build
           docker compose ps
         '''
@@ -87,24 +93,23 @@ PY
     stage('Wait for Services Ready') {
       steps {
         sh '''
-          set -eux
-          # 等 target-api ready（用容器内 curl 更稳，不依赖宿主端口）
-          for i in $(seq 1 30); do
-            if docker compose exec -T trigger sh -lc "curl -fsS http://target-api:8000/docs >/dev/null"; then
-              echo "target-api is up"
-              break
+          set -euxo pipefail
+
+          # 用 curl 容器在 compose 网络里探活，避免 Jenkins 节点没 curl
+          NET="${COMPOSE_PROJECT_NAME}_default"
+
+          for i in $(seq 1 60); do
+            if docker run --rm --network "$NET" curlimages/curl:8.6.0 \
+                 -fsS "http://target-api:8000/health" >/dev/null 2>&1; then
+              echo "target-api ready"
+              exit 0
             fi
-            sleep 1
+            sleep 2
           done
 
-          # 等 trigger ready
-          for i in $(seq 1 30); do
-            if docker compose exec -T trigger sh -lc "curl -fsS http://127.0.0.1:8000/docs >/dev/null"; then
-              echo "trigger is up"
-              break
-            fi
-            sleep 1
-          done
+          echo "target-api NOT ready after 120s"
+          docker compose ps
+          exit 1
         '''
       }
     }
@@ -112,27 +117,24 @@ PY
     stage('Trigger Tests') {
       steps {
         sh '''
-          set -eux
+          set -euxo pipefail
+          NET="${COMPOSE_PROJECT_NAME}_default"
 
-          # 在 trigger 容器里触发它自己的 /run-tests
-          docker compose exec -T trigger sh -lc '
-            curl -s -X POST http://127.0.0.1:8000/run-tests > /app/trigger_result.json
-            cat /app/trigger_result.json
+          # 在 python 容器里装依赖 + 执行测试（避免 Jenkins 节点没有 python）
+          docker run --rm --network "$NET" -v "$PWD":/w -w /w python:3.12-slim sh -lc '
+            python -m pip install -U pip
+            if [ -f requirements.txt ]; then
+              pip install -r requirements.txt
+            fi
 
-            python - << "PY"
-import json, sys
-with open("/app/trigger_result.json","r",encoding="utf-8") as f:
-    data=json.load(f)
-code=int(data.get("exit_code",1))
-print("exit_code =", code)
-sys.exit(code)
-PY
+            # 优先跑项目入口：run_demo.py（常见于该类 demo 项目）
+            if [ -f run_demo.py ]; then
+              python run_demo.py
+            else
+              # 兜底：unittest discover
+              python -m unittest discover -s . -p "test*.py"
+            fi
           '
-
-          # 拷贝产物回 workspace
-          rm -rf report trigger_result.json || true
-          docker compose cp trigger:/app/trigger_result.json ./trigger_result.json || true
-          docker compose cp trigger:/app/report ./report || true
         '''
       }
     }
@@ -142,10 +144,11 @@ PY
     always {
       sh '''
         set +e
-        docker compose logs --no-color --tail=200 || true
-        docker compose down -v || true
+        docker compose ps
+        docker compose logs --no-color --tail=200
+        docker compose down -v
       '''
-      archiveArtifacts artifacts: 'report/*.html,trigger_result.json', allowEmptyArchive: true
+      archiveArtifacts artifacts: '**/report/**, **/reports/**, **/allure-results/**, **/log/**, **/*.log', allowEmptyArchive: true
     }
   }
 }
