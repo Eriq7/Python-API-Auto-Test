@@ -38,6 +38,7 @@ pipeline {
       steps {
         sh '''
           set -euxo pipefail
+          # patch 仍然在 python 容器里做（不依赖 Jenkins 节点 python）
           docker run --rm -v "$PWD":/w -w /w python:3.12-slim python - <<'PY'
 import pathlib, re
 
@@ -119,48 +120,18 @@ PY
       steps {
         sh '''
           set -euxo pipefail
-          NET="${COMPOSE_PROJECT_NAME}_default"
 
-          echo "=== host workspace sanity before tests ==="
-          pwd
-          ls -la
-          test -f requirements.txt || true
-          test -f run_demo.py || true
+          echo "=== IMPORTANT: do NOT docker run -v $PWD (mount breaks in Jenkins-in-container)."
+          echo "=== Run tests inside the already-built compose service container (trigger)."
 
-          docker run --rm --network "$NET" -v "$PWD":/w -w /w python:3.12-slim sh -lc '
+          docker compose exec -T trigger sh -lc '
             set -euxo pipefail
-            echo "=== inside container workspace check ==="
+            echo "=== inside trigger container ==="
             pwd
             ls -la
-            echo "=== inside container top files ==="
-            find . -maxdepth 2 -type f | sed -n "1,120p"
-
-            # 如果这里还是空目录，直接报错（别再浪费一次 build）
-            cnt=$(find . -maxdepth 1 -type f | wc -l | tr -d " ")
-            if [ "$cnt" -eq 0 ]; then
-              echo "ERROR: workspace mounted into container is empty. Checkout/mount path is wrong."
-              exit 22
-            fi
-
-            python -m pip install -U pip
-            if [ -f requirements.txt ]; then
-              pip install -r requirements.txt
-            fi
-
-            if [ -f run_demo.py ]; then
-              python run_demo.py
-              exit 0
-            fi
-
-            # 兜底：按常见目录跑
-            for d in testcase testcases tests test; do
-              if [ -d "$d" ]; then
-                python -m unittest discover -s "$d" -p "*.py" -t .
-                exit 0
-              fi
-            done
-
-            python -m unittest discover -s . -p "test*.py" -t .
+            echo "=== run_demo.py ==="
+            test -f run_demo.py
+            python run_demo.py
           '
         '''
       }
