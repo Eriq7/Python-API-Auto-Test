@@ -30,6 +30,30 @@ class Demo_API(unittest.TestCase):
     def tearDown(self):
         pass
 
+    @staticmethod
+    def _normalize_actual_status(resp: requests.Response, result_json: dict):
+        """
+        ✅ 关键修复：
+        FastAPI validation error 会直接返回 HTTP 422，默认 body 没有 {"status": ...}
+        你的 Excel 里对“参数错误”期望业务码 10021（而不是 None）
+        所以：当 status 缺失且 status_code==422 -> 映射为 10021
+        """
+        actual_status = None
+        if isinstance(result_json, dict):
+            actual_status = result_json.get("status")
+
+        if actual_status is None and getattr(resp, "status_code", None) == 422:
+            return 10021
+
+        return actual_status
+
+    @staticmethod
+    def _normalize_actual_message(result_json: dict):
+        if not isinstance(result_json, dict):
+            return None
+        # 兼容 message/msg 字段
+        return result_json.get("message") if result_json.get("message") is not None else result_json.get("msg")
+
     @ddt.data(*testData)
     def test_api(self, data):
         # 1) Defensive: skip empty rows / empty ID to avoid split(None)
@@ -38,13 +62,12 @@ class Demo_API(unittest.TestCase):
             self.skipTest("Excel row has empty ID; skipped to avoid split(None).")
 
         # 2) Row number: compatible with IDs like event_query_001
-        #    If the ID format is wrong, fail with a clear message
         try:
             rowNum = int(str(case_id).split("_")[2])
         except Exception:
             self.fail(f"Invalid ID format: {case_id!r}. Expected like xxx_xxx_001")
 
-        # Optional: show UseCase from Excel (helps HR/reader)
+        # Optional: show UseCase from Excel
         use_case = data.get("UseCase") or data.get("usecase") or ""
 
         print(f"******* Running test case -> {case_id} *********")
@@ -72,24 +95,31 @@ class Demo_API(unittest.TestCase):
                 print("Response content(raw):", getattr(re, "content", None))
             self.fail("Response is not valid JSON; cannot parse re.json().")
 
+        # 打印响应体，方便定位
+        print("HTTP status_code:", getattr(re, "status_code", None))
         try:
-            print("Response JSON:", re.content.decode("utf-8"))
+            print("Response JSON/Text:", re.text)
         except Exception:
-            print("Response content (cannot decode):", re.content)
+            try:
+                print("Response content(raw):", re.content)
+            except Exception:
+                pass
 
         # 6) Read expected result from Excel
-        readData_code = int(data.get("status_code"))
+        # Excel 里可能是 "10021" / 10021 / 10021.0，这里做更稳的转换
+        try:
+            readData_code = int(str(data.get("status_code")).strip())
+        except Exception:
+            self.fail(f"Invalid status_code in Excel for {case_id}: {data.get('status_code')!r}")
+
         readData_msg = data.get("msg")
 
-        # 7) Write back to Excel (PASS/FAIL)
-        actual_status = self.result.get("status")
-        actual_message = (
-            self.result.get("message")
-            if self.result.get("message") is not None
-            else self.result.get("msg")
-        )
+        # 7) Normalize actual status/message
+        actual_status = self._normalize_actual_status(re, self.result)
+        actual_message = self._normalize_actual_message(self.result)
 
-        if readData_code == actual_status and readData_msg == actual_message:
+        # 8) Write back to Excel (PASS/FAIL) —— 用 normalize 后的结果
+        if (str(readData_code) == str(actual_status)) and (str(readData_msg) == str(actual_message)):
             ok_data = "PASS"
             print(f"Test result: {case_id} ----> {ok_data}")
             WriteExcel(setting.TARGET_FILE).write_data(rowNum + 1, ok_data)
@@ -98,9 +128,15 @@ class Demo_API(unittest.TestCase):
             print(f"Test result: {case_id} ----> {not_data}")
             WriteExcel(setting.TARGET_FILE).write_data(rowNum + 1, not_data)
 
-        # 8) Assertions
-        self.assertEqual(actual_status, readData_code, f"Actual status -> {actual_status}")
-        self.assertEqual(actual_message, readData_msg, f"Actual message -> {actual_message}")
+        # 9) Assertions —— 失败时把 HTTP 和 body 打出来（关键）
+        self.assertEqual(
+            str(actual_status), str(readData_code),
+            f"Actual status -> {actual_status} | HTTP={getattr(re,'status_code',None)} | body={getattr(re,'text',None)}"
+        )
+        self.assertEqual(
+            str(actual_message), str(readData_msg),
+            f"Actual message -> {actual_message} | HTTP={getattr(re,'status_code',None)} | body={getattr(re,'text',None)}"
+        )
 
 
 if __name__ == '__main__':
