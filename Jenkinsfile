@@ -38,7 +38,6 @@ pipeline {
       steps {
         sh '''
           set -euxo pipefail
-          # patch 仍然在 python 容器里做（不依赖 Jenkins 节点 python）
           docker run --rm -v "$PWD":/w -w /w python:3.12-slim python - <<'PY'
 import pathlib, re
 
@@ -121,18 +120,22 @@ PY
         sh '''
           set -euxo pipefail
 
-          echo "=== IMPORTANT: do NOT docker run -v $PWD (mount breaks in Jenkins-in-container)."
-          echo "=== Run tests inside the already-built compose service container (trigger)."
+          echo "=== Run tests inside trigger container (no bind mount)."
+          echo "=== Pass Scheme-A env so all requests hit target-api."
 
-          docker compose exec -T trigger sh -lc '
-            set -euxo pipefail
-            echo "=== inside trigger container ==="
-            pwd
-            ls -la
-            echo "=== run_demo.py ==="
-            test -f run_demo.py
-            python run_demo.py
-          '
+          docker compose exec -T \
+            -e BASE_URL=http://target-api:8000 \
+            -e RESET_PATH=/api/test/reset \
+            trigger sh -lc '
+              set -euxo pipefail
+              echo "=== inside trigger container ==="
+              pwd
+              ls -la
+              echo "BASE_URL=$BASE_URL"
+              echo "RESET_PATH=$RESET_PATH"
+              test -f run_demo.py
+              python run_demo.py
+            '
         '''
       }
     }

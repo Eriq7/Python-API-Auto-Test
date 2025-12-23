@@ -17,16 +17,6 @@ def _is_blank(x):
 
 
 def safe_parse(x):
-    """
-    把 Excel 里读出来的值转换成 Python 对象：
-    - None / "" / "   " -> None
-    - dict/list/int/float/bool -> 原样返回
-    - str:
-        - 尝试 json.loads
-        - 失败再尝试 ast.literal_eval（兼容单引号、None/True/False）
-        - 仍失败则尝试解析 querystring: "a=1&b=2" / "eid=1" / "phone="
-        - 仍失败则原样返回字符串
-    """
     if _is_blank(x):
         return None
 
@@ -38,24 +28,16 @@ def safe_parse(x):
         if s == "":
             return None
 
-        # 1) JSON（推荐 Excel 写标准 JSON：双引号）
         try:
             return json.loads(s)
         except Exception:
             pass
 
-        # 2) Python 字面量（兼容旧 Excel：单引号、None/True/False）
         try:
             return ast.literal_eval(s)
         except Exception:
             pass
 
-        # 3) ✅ querystring（关键修复点）
-        # 支持：
-        #   "eid=1"
-        #   "name=红米"
-        #   "eid=1&name=红米"
-        #   "eid=1&phone="  (空值也保留)
         try:
             if "=" in s:
                 kv_pairs = parse_qsl(s, keep_blank_values=True)
@@ -64,32 +46,49 @@ def safe_parse(x):
         except Exception:
             pass
 
-        # 4) 实在解析不了就返回原字符串
         return s
 
     return x
 
 
 def _running_in_docker() -> bool:
-    # 常见容器标志：/.dockerenv 存在
     return os.path.exists("/.dockerenv")
 
 
-def _rewrite_url_for_docker(url: str) -> str:
+def _get_base_url_env() -> str | None:
     """
-    规则（确定版）：
-    - 本机跑：Excel 继续用 127.0.0.1（不改）
-    - 只有“测试框架跑在 Docker 容器里”时，才把 127.0.0.1/localhost 重写成 host.docker.internal
-      （容器里访问宿主机 target API）
+    Scheme A control:
+      export BASE_URL=http://target-api:8000
     """
-    if not url or not _running_in_docker():
+    v = os.getenv("BASE_URL", "").strip()
+    if not v:
+        return None
+    return v.rstrip("/")
+
+
+def _rewrite_url_for_env_or_docker(url: str) -> str:
+    """
+    Priority:
+    1) If BASE_URL is set, overwrite scheme+netloc using BASE_URL, keep path+query+fragment.
+    2) Else if running in docker and host is localhost/127.0.0.1 -> rewrite to target-api
+    3) Else return unchanged
+    """
+    if not url:
         return url
 
     try:
         p = urlparse(url)
-        if p.hostname in ("127.0.0.1", "localhost"):
-            new_netloc = p.netloc.replace(p.hostname, "host.docker.internal")
+
+        base = _get_base_url_env()
+        if base:
+            b = urlparse(base)
+            # keep original path/query/fragment, replace scheme+netloc
+            return urlunparse((b.scheme or p.scheme, b.netloc, p.path, p.params, p.query, p.fragment))
+
+        if _running_in_docker() and p.hostname in ("127.0.0.1", "localhost"):
+            new_netloc = p.netloc.replace(p.hostname, "target-api")
             return urlunparse((p.scheme, new_netloc, p.path, p.params, p.query, p.fragment))
+
     except Exception:
         pass
 
@@ -107,15 +106,14 @@ class SendRequests:
             if not method or not url:
                 raise ValueError(f"Excel row missing method/url: method={method!r}, url={url!r}")
 
-            # ✅ Docker 下自动改写，不要求你改 Excel
-            url = _rewrite_url_for_docker(url)
+            # ✅ Scheme A: env override OR docker rewrite to target-api
+            url = _rewrite_url_for_env_or_docker(url)
 
             params = safe_parse(apiData.get("params"))
             headers = safe_parse(apiData.get("headers"))
             body_data = safe_parse(apiData.get("body"))
             req_type = (apiData.get("type") or "").strip().lower()
 
-            # 防御：params/headers 若解析成了非 dict（比如奇怪字符串），避免 requests 处理异常
             if params is not None and not isinstance(params, dict):
                 print(f"[WARN] params is not dict after parse: {params!r}. Forcing to None.")
                 params = None
@@ -123,7 +121,6 @@ class SendRequests:
                 print(f"[WARN] headers is not dict after parse: {headers!r}. Forcing to None.")
                 headers = None
 
-            # 保持原项目语义：type=json 就发 JSON；否则走 data（表单/普通）
             if req_type == "json":
                 resp = s.request(
                     method=method,

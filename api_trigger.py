@@ -16,7 +16,6 @@ def run_tests():
     exit_code = p.returncode
     status = "SUCCESS" if exit_code == 0 else "FAILED"
 
-    # Return last ~80 lines for debugging in Jenkins console
     out_lines = (p.stdout or "").splitlines()[-80:]
     err_lines = (p.stderr or "").splitlines()[-80:]
 

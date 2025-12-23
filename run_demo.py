@@ -9,7 +9,7 @@ import unittest
 import shutil
 import argparse
 
-import requests  # ✅ NEW: call reset endpoint
+import requests
 
 sys.path.append(os.path.dirname(__file__))
 
@@ -22,19 +22,38 @@ def add_case(test_path: str, pattern: str) -> unittest.TestSuite:
     return unittest.defaultTestLoader.discover(test_path, pattern=pattern)
 
 
+def _get_base_url() -> str:
+    """
+    Scheme A:
+    - Local default: http://127.0.0.1:8000
+    - CI/Compose: export BASE_URL=http://target-api:8000
+    """
+    return os.getenv("BASE_URL", "http://127.0.0.1:8000").rstrip("/")
+
+
 def reset_test_data():
     """
-    ✅ Make runs repeatable (local/CI):
-    Reset target API in-memory data before tests.
+    Make runs repeatable (local/CI):
+    Reset target API data before tests.
+
+    Control via env:
+      BASE_URL   (default http://127.0.0.1:8000)
+      RESET_PATH (default /api/test/reset)
     """
-    reset_url = "http://127.0.0.1:8000/api/test/reset"
+    base = _get_base_url()
+    reset_path = os.getenv("RESET_PATH", "/api/test/reset")
+    if not reset_path.startswith("/"):
+        reset_path = "/" + reset_path
+
+    reset_url = f"{base}{reset_path}"
+
     try:
-        r = requests.post(reset_url, timeout=3)
+        r = requests.post(reset_url, timeout=5)
         r.raise_for_status()
         print(f"[INFO] reset OK -> {reset_url}")
         return True
     except Exception as e:
-        print(f"[WARN] reset failed -> {e}")
+        print(f"[WARN] reset failed -> {reset_url} ({e})")
         return False
 
 
@@ -55,7 +74,6 @@ def run_case(suite: unittest.TestSuite, report_dir: str, title: str, description
         )
         result = runner.run(suite)
 
-    # Stable entry for reviewers/CI artifacts
     try:
         shutil.copyfile(report_path, latest_path)
         print(f"[INFO] latest report -> {os.path.abspath(latest_path)}")
@@ -85,7 +103,7 @@ def main() -> int:
     """
     args = parse_args()
 
-    # ✅ NEW: always reset first (doesn't crash if reset is unavailable)
+    # Always reset first (doesn't crash if reset is unavailable)
     reset_test_data()
 
     try:
@@ -111,6 +129,7 @@ def main() -> int:
     tests_run = getattr(result, "testsRun", 0)
 
     print("----- SUMMARY -----")
+    print(f"BASE_URL={_get_base_url()}")
     print(f"TESTS_RUN={tests_run}")
     print(f"FAILURES={failures}")
     print(f"ERRORS={errors}")
