@@ -4,35 +4,48 @@
 
 ## 📌 Overview
 
-🔍 **What This Project Really Demonstrates**
+This project is not just an API test suite — it is a **containerized, CI-driven API testing platform** designed to demonstrate how real-world backend testing is built and operated.
 
-- **Framework-oriented testing mindset**  
-  Instead of writing scattered API test scripts, this project focuses on structuring API tests into a reusable and maintainable framework.
+### 🚀 What This Project Demonstrates
 
-- **Clear separation of concerns**  
-  Test logic, test data, and execution flow are separated, allowing tests to scale as the project grows.
+- 🧩 **Framework-oriented API testing**  
+  API tests are structured as a reusable framework instead of scattered scripts.
 
-- **Predictable and maintainable API regression testing**  
-  By introducing Excel-based data-driven testing, standardized request handling, and unified HTML reporting, the framework makes regression testing easier to maintain and easier to understand—especially when test cases change frequently.
+- 📊 **Data-driven testing (Excel → API → Report)**  
+  Test cases, parameters, and expected results are managed in Excel for traceability.
 
-- **Engineering / CI Demonstration**
+- 🐳 **Fully Dockerized execution**  
+  Both the **target API** and the **test runner** run in containers to guarantee environment consistency.
 
-- **Dockerized execution (Docker + Compose)**  
-  The target API and the test runner are containerized to ensure **consistent environments** across local runs and CI.
+- ⚡ **FastAPI-based testable backend**  
+  A real FastAPI service is provided so tests run against an actual HTTP system.
 
-- **FastAPI services (Target API + Test Trigger)**  
-  A FastAPI-based target system is provided for repeatable API testing, and a lightweight trigger service can invoke the test runner.
+- 🔁 **CI-driven regression testing**  
+  Jenkins pulls the repo, builds containers, runs tests, and archives HTML + Excel reports automatically.
 
-- **Jenkins CI Pipeline (Pipeline from SCM)**  
-  Jenkins pulls the repo, starts services via Docker Compose, runs the test suite, and archives reports as build artifacts.
+---
 
-💡 **When This Kind of Framework Is Useful**
+### 🧠 Why This Matters
+
+In real backend teams, API tests must be:
+
+- **Repeatable** → same result on every machine  
+- **Traceable** → each test maps to business cases  
+- **Automatable** → runnable by CI without manual setup  
+
+This project shows how those goals are achieved using **FastAPI + Docker + Jenkins + Python test frameworks**.
+
+---
+
+### 💡 When This Kind of Framework Is Useful
 
 This approach is especially suitable for:
 
 - **Small to mid-sized backend systems**
 - **Teams that rely heavily on API regression testing**
-- **Scenarios where test cases change frequently and require clear traceability**
+- **Projects where test cases change frequently and must remain traceable**
+
+---
 
 The framework is built using:
 
